@@ -1,5 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
+st.write(f"Versión actual de la librería: {genai.__version__}")
 import json
 import pandas as pd
 
