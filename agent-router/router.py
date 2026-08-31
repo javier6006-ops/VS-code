@@ -9,6 +9,11 @@ the caller's job; this only does classify -> write inbox -> poll outbox.
 
 Usage:
     python router.py dispatch --message "..." --from-user USER --channel telegram
+    python router.py heartbeat          Touch this router's heartbeat file.
+                                         Call this from your bot's idle loop
+                                         so agent-dashboard can see the
+                                         router itself as "ok" even between
+                                         messages, not just while dispatching.
 
 See README.md for the dispatch table, the inbox/outbox file formats, and
 how this fits with the sibling agent-dashboard project (same ~/agents tree).
@@ -25,6 +30,7 @@ from pathlib import Path
 
 AGENTS_HOME = Path(os.environ.get("AGENTS_HOME", Path.home() / "agents"))
 UNCLASSIFIED_LOG = AGENTS_HOME / "router" / "unclassified.log"
+HEARTBEAT_PATH = AGENTS_HOME / "router" / "heartbeat"
 
 # Order matters only for the "which two agents?" clarifying question below.
 DISPATCH_TABLE: dict[str, list[str]] = {
@@ -66,6 +72,17 @@ def split_segments(text: str) -> list[str]:
     """Split a compound message on "y"/"and" into candidate single-topic turns."""
     parts = [p.strip() for p in SPLIT_PATTERN.split(text) if p.strip()]
     return parts if len(parts) > 1 else [text]
+
+
+def touch_heartbeat() -> None:
+    """Mark the router itself as alive for agent-dashboard's heartbeat_file check.
+
+    Called on every handled message. A persistent bot loop (Telegram polling,
+    etc.) should also call this on its own idle timer so the router still
+    reads "ok" between messages, not just while actively dispatching.
+    """
+    HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HEARTBEAT_PATH.touch()
 
 
 def log_unclassified(text: str, from_user: str, channel: str) -> None:
@@ -150,6 +167,7 @@ def handle_message(
     (never broadcasts to more than one agent per turn) and dispatches each in
     order. Returns one reply per turn, in the order to forward to the user.
     """
+    touch_heartbeat()
     agents = classify(text)
     if len(agents) > 1:
         segments = split_segments(text)
@@ -160,6 +178,10 @@ def handle_message(
             ]
         return [f"¿Esto va para {agents[0]} o para {agents[1]}?"]
     return [handle_turn(text, from_user, channel, timeout=timeout, poll_interval=poll_interval)]
+
+
+def cmd_heartbeat(_args: argparse.Namespace) -> None:
+    touch_heartbeat()
 
 
 def cmd_dispatch(args: argparse.Namespace) -> None:
@@ -185,6 +207,9 @@ def main() -> None:
     dispatch_parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     dispatch_parser.add_argument("--poll-interval", type=float, default=POLL_INTERVAL_SECONDS)
     dispatch_parser.set_defaults(func=cmd_dispatch)
+
+    heartbeat_parser = sub.add_parser("heartbeat", help="Touch the router's heartbeat file")
+    heartbeat_parser.set_defaults(func=cmd_heartbeat)
 
     args = parser.parse_args()
     args.func(args)

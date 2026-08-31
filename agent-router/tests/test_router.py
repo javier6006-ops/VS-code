@@ -28,6 +28,15 @@ class RouterTestCase(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
+    def test_touch_heartbeat_creates_file(self):
+        self.assertFalse(self.rt.HEARTBEAT_PATH.exists())
+        self.rt.touch_heartbeat()
+        self.assertTrue(self.rt.HEARTBEAT_PATH.exists())
+
+    def test_handle_message_touches_heartbeat_even_when_unclassified(self):
+        self.rt.handle_message("cuál es la capital de Francia", "ale", "telegram")
+        self.assertTrue(self.rt.HEARTBEAT_PATH.exists())
+
     def test_classify_single_agent(self):
         self.assertEqual(self.rt.classify("revisa mi bandeja de email"), ["email"])
         self.assertEqual(self.rt.classify("¿cuáles son los precios internos?"), ["company"])

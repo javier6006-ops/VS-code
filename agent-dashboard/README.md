@@ -1,8 +1,10 @@
 # Agent Dashboard
 
-Health-checker for a fleet of agents. Reads a registry, pings each agent
-over HTTP, checks its most recent error log entry, and reports one of four
-statuses per agent: `ok`, `lento`, `caído`, `ok-con-error`.
+Health-checker for a fleet of agents. Reads a registry, checks each agent's
+liveness (over HTTP, or via a heartbeat file for agents with no HTTP
+surface — e.g. the file-based agents [`agent-router`](../agent-router)
+dispatches to), checks its most recent error log entry, and reports one of
+four statuses per agent: `ok`, `lento`, `caído`, `ok-con-error`.
 
 ## Layout it expects
 
@@ -25,14 +27,22 @@ Set `AGENTS_HOME` to point somewhere other than `~/agents` if needed.
 ```json
 {
   "agents": [
-    { "name": "router", "ping_url": "http://localhost:8001/health", "timeout_seconds": 5 }
+    { "name": "email", "heartbeat_file": "~/agents/email/heartbeat" },
+    { "name": "legacy-http-agent", "ping_url": "http://localhost:8001/health", "timeout_seconds": 5 }
   ]
 }
 ```
 
 - `name`: agent identifier, also used to locate `~/agents/<name>/logs/error.log`.
 - `ping_url`: HTTP endpoint the agent exposes; any 2xx response counts as reachable.
-- `timeout_seconds`: optional, defaults to 5.
+  `timeout_seconds`: optional, defaults to 5.
+- `heartbeat_file`: path the agent itself touches/writes to periodically
+  (`~` is expanded). Reachable as long as its mtime is within the last 5
+  minutes. This is the mechanism for agents with no HTTP endpoint at all —
+  it never measures latency, so a heartbeat-only agent can be `ok`,
+  `ok-con-error`, or `caído`, but never `lento`.
+- Set exactly one of `ping_url` / `heartbeat_file` per agent; if an agent
+  has neither, it's always reported `caído`.
 
 ### `error.log`
 

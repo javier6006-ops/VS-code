@@ -88,10 +88,26 @@ def save_state(state: dict) -> None:
 
 
 def ping_agent(agent: dict) -> tuple[bool, float | None]:
-    """Attempt to reach the agent. Returns (reachable, latency_seconds)."""
-    url = agent.get("ping_url")
-    if not url:
-        return False, None
+    """Check whether an agent is alive. Returns (reachable, latency_seconds).
+
+    Two liveness mechanisms are supported, tried in this order:
+    - "ping_url": an HTTP health endpoint; latency is the round-trip time.
+    - "heartbeat_file": a file the agent itself touches/writes periodically
+      (the only option for file-based agents with no HTTP surface, e.g. ones
+      driven by agent-router's inbox/outbox convention). Freshness within
+      DOWN_AFTER counts as reachable; latency is always None since there's
+      no request/response to time, so heartbeat-only agents can never be
+      "lento".
+    """
+    if agent.get("ping_url"):
+        return _ping_http(agent)
+    if agent.get("heartbeat_file"):
+        return _check_heartbeat_file(agent)
+    return False, None
+
+
+def _ping_http(agent: dict) -> tuple[bool, float | None]:
+    url = agent["ping_url"]
     timeout = float(agent.get("timeout_seconds", DEFAULT_PING_TIMEOUT))
     started = time.monotonic()
     try:
@@ -100,6 +116,15 @@ def ping_agent(agent: dict) -> tuple[bool, float | None]:
             return ok, time.monotonic() - started
     except (urllib.error.URLError, TimeoutError, OSError):
         return False, None
+
+
+def _check_heartbeat_file(agent: dict) -> tuple[bool, float | None]:
+    path = Path(agent["heartbeat_file"]).expanduser()
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return False, None
+    return now_utc() - mtime <= DOWN_AFTER, None
 
 
 def read_last_error(name: str) -> tuple[str | None, datetime | None]:

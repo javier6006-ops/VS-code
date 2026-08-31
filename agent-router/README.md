@@ -18,6 +18,7 @@ channel.
 ~/agents/
   router/
     unclassified.log         # one JSON line per message with no matching agent
+    heartbeat                 # touched on every handled message; see below
   <agent-name>/
     inbox/
       <token>.md              # written by the router, read by the agent
@@ -72,6 +73,24 @@ for routing, not full NLU.
 - **No opinions.** The router only classifies and relays; the reply text is
   always whatever the destination agent wrote to its outbox (or one of the
   three canned router messages above).
+
+## Being monitored by agent-dashboard
+
+None of these file-based agents (the router included) expose an HTTP
+endpoint, so `agent-dashboard` watches them via its `heartbeat_file`
+mechanism instead of `ping_url`. `handle_message()` touches
+`~/agents/router/heartbeat` on every message it processes, so the router
+shows as alive in the dashboard whenever it's actively routing.
+
+That alone only proves liveness while messages are flowing. If you run the
+router as a persistent bot loop (polling Telegram, etc.), also call
+`router.touch_heartbeat()` — or `python router.py heartbeat` — on the
+loop's own idle timer (e.g. once a minute) so the dashboard still reads
+"ok" during quiet periods instead of drifting to "caído" after 5 minutes
+of no user messages. The `email` / `company` / `ecommerce` worker agents
+should do the same on their own idle timers once they exist. Point each
+agent's `registry.json` entry at its heartbeat file — see
+[`agent-dashboard`](../agent-dashboard)'s README.
 
 ## Usage
 

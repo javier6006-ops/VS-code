@@ -2,6 +2,7 @@ import importlib
 import json
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -155,6 +156,46 @@ class DashboardTestCase(unittest.TestCase):
         self.assertEqual(len(report["transitions"]), 1)
         persisted = json.loads(self.dash.LAST_STATUS_PATH.read_text())
         self.assertNotIn("transitions", persisted)
+
+    def test_heartbeat_file_fresh_is_reachable(self):
+        heartbeat = self.agents_home / "email" / "heartbeat"
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        heartbeat.touch()
+
+        reachable, latency = self.dash.ping_agent({"heartbeat_file": str(heartbeat)})
+        self.assertTrue(reachable)
+        self.assertIsNone(latency)
+
+    def test_heartbeat_file_stale_is_not_reachable(self):
+        import os
+
+        heartbeat = self.agents_home / "email" / "heartbeat"
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        heartbeat.touch()
+        stale_time = time.time() - timedelta(minutes=10).total_seconds()
+        os.utime(heartbeat, (stale_time, stale_time))
+
+        reachable, _ = self.dash.ping_agent({"heartbeat_file": str(heartbeat)})
+        self.assertFalse(reachable)
+
+    def test_heartbeat_file_missing_is_not_reachable(self):
+        missing = self.agents_home / "email" / "heartbeat"
+        reachable, _ = self.dash.ping_agent({"heartbeat_file": str(missing)})
+        self.assertFalse(reachable)
+
+    def test_agent_with_no_liveness_mechanism_is_unreachable(self):
+        reachable, _ = self.dash.ping_agent({"name": "mystery"})
+        self.assertFalse(reachable)
+
+    def test_check_all_reports_ok_for_fresh_heartbeat_agent(self):
+        heartbeat = self.agents_home / "email" / "heartbeat"
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        heartbeat.touch()
+        self.write_registry([{"name": "email", "heartbeat_file": str(heartbeat)}])
+
+        report = self.dash.check_all()
+        agent = report["agents"][0]
+        self.assertEqual(agent["status"], "ok")
 
 
 if __name__ == "__main__":
