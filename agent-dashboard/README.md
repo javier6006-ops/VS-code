@@ -90,3 +90,35 @@ driven by cron/systemd-timer instead of the built-in hourly sleep:
 ```bash
 python dashboard.py loop --once
 ```
+
+## Running it for real (systemd)
+
+`systemd/agent-dashboard.service` + `systemd/agent-dashboard.timer` run
+`loop --once` every hour via systemd instead of relying on the script's own
+`time.sleep`. Install as a user unit:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/agent-dashboard.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now agent-dashboard.timer
+```
+
+## Trying it out locally
+
+`examples/demo_agent.py` is a throwaway HTTP endpoint for exercising every
+status:
+
+```bash
+python examples/demo_agent.py --port 8001                 # healthy -> ok
+python examples/demo_agent.py --port 8002 --fail           # 500s    -> caído (after 5 min without a 2xx)
+python examples/demo_agent.py --port 8003 --delay 31       # slow    -> lento
+```
+
+Point a `registry.json` at these ports, then run `python dashboard.py check`.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests
+```

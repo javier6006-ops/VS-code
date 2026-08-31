@@ -1,0 +1,8 @@
+[Unit]
+Description=Agent Dashboard health check (single pass)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=AGENTS_HOME=%h/agents
+ExecStart=/usr/bin/python3 %h/agent-dashboard/dashboard.py loop --once
