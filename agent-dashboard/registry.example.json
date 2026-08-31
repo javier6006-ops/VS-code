@@ -1,0 +1,14 @@
+{
+  "agents": [
+    {
+      "name": "router",
+      "ping_url": "http://localhost:8001/health",
+      "timeout_seconds": 5
+    },
+    {
+      "name": "email",
+      "ping_url": "http://localhost:8002/health",
+      "timeout_seconds": 5
+    }
+  ]
+}
