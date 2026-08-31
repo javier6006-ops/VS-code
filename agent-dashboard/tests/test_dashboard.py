@@ -117,6 +117,45 @@ class DashboardTestCase(unittest.TestCase):
         self.assertIn("caído: email", alerts)
         self.assertNotIn("caído: router", alerts)
 
+    def test_history_records_transition_once_then_stays_quiet(self):
+        self.write_registry([{"name": "router", "ping_url": "http://x/health"}])
+
+        with patch.object(self.dash, "ping_agent", return_value=(True, 0.05)):
+            self.dash.check_all()  # first sighting: null -> ok
+            self.dash.check_all()  # unchanged: no new event
+
+        events = self.dash.read_history(limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["name"], "router")
+        self.assertIsNone(events[0]["from"])
+        self.assertEqual(events[0]["to"], "ok")
+
+    def test_history_records_ok_to_caido_transition(self):
+        self.write_registry([{"name": "router", "ping_url": "http://x/health"}])
+
+        with patch.object(self.dash, "ping_agent", return_value=(True, 0.05)):
+            self.dash.check_all()
+        stale = self.dash.to_iso(self.dash.now_utc() - timedelta(minutes=10))
+        state = self.dash.load_state()
+        state["router"]["last_ping"] = stale
+        self.dash.save_state(state)
+        with patch.object(self.dash, "ping_agent", return_value=(False, None)):
+            self.dash.check_all()
+
+        events = self.dash.read_history(limit=10)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["from"], "ok")
+        self.assertEqual(events[0]["to"], "caído")
+
+    def test_run_check_and_persist_exposes_transitions_but_not_in_last_status_file(self):
+        self.write_registry([{"name": "router", "ping_url": "http://x/health"}])
+        with patch.object(self.dash, "ping_agent", return_value=(True, 0.05)):
+            report = self.dash.run_check_and_persist()
+
+        self.assertEqual(len(report["transitions"]), 1)
+        persisted = json.loads(self.dash.LAST_STATUS_PATH.read_text())
+        self.assertNotIn("transitions", persisted)
+
 
 if __name__ == "__main__":
     unittest.main()

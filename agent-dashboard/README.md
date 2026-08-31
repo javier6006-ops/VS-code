@@ -105,6 +105,12 @@ each new result to the browser over Server-Sent Events, so a card flips to
 with no manual refresh. Scales to any number of agents in `registry.json`;
 the page lays them out as a responsive grid.
 
+Below the cards, a **Histórico** panel lists every status transition (e.g.
+`ok → caído`), newest first, pushed live the moment it's detected — durably
+recorded in `~/agents/dashboard/history.jsonl` (one JSON object per line:
+`at`, `name`, `from`, `to`) so it survives restarts and is queryable outside
+the browser too (`GET /api/history` returns the last 50 as JSON).
+
 ## Running it for real (systemd)
 
 `systemd/agent-dashboard.service` + `systemd/agent-dashboard.timer` run

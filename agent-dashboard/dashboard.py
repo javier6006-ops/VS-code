@@ -31,6 +31,7 @@ DASHBOARD_DIR = AGENTS_HOME / "dashboard"
 STATE_PATH = DASHBOARD_DIR / "state.json"
 LAST_STATUS_PATH = DASHBOARD_DIR / "last-status.json"
 ALERTS_LOG_PATH = DASHBOARD_DIR / "alerts.log"
+HISTORY_PATH = DASHBOARD_DIR / "history.jsonl"
 
 DOWN_AFTER = timedelta(minutes=5)
 SLOW_AFTER_SECONDS = 30.0
@@ -119,7 +120,34 @@ def read_last_error(name: str) -> tuple[str | None, datetime | None]:
     return last_line, ts
 
 
-def compute_status(name: str, agent: dict, state: dict) -> dict:
+def append_history(event: dict) -> None:
+    DASHBOARD_DIR.mkdir(parents=True, exist_ok=True)
+    with HISTORY_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def read_history(limit: int = 50) -> list[dict]:
+    """Return up to `limit` most recent transition events, newest first."""
+    if not HISTORY_PATH.exists():
+        return []
+    try:
+        with HISTORY_PATH.open("r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except OSError:
+        return []
+    events = []
+    for line in lines[-limit:]:
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    events.reverse()
+    return events
+
+
+def compute_status(
+    name: str, agent: dict, state: dict, transitions: list[dict] | None = None
+) -> dict:
     agent_state = state.setdefault(name, {})
     reachable, latency = ping_agent(agent)
 
@@ -143,23 +171,40 @@ def compute_status(name: str, agent: dict, state: dict) -> dict:
     else:
         status = "ok"
 
+    display_status = {
+        "caido": "caído",
+        "lento": "lento",
+        "ok-con-error": "ok-con-error",
+        "ok": "ok",
+    }[status]
+
+    previous_status = agent_state.get("last_status")
+    if previous_status != display_status:
+        event = {
+            "at": to_iso(check_time),
+            "name": name,
+            "from": previous_status,
+            "to": display_status,
+        }
+        append_history(event)
+        if transitions is not None:
+            transitions.append(event)
+    agent_state["last_status"] = display_status
+
     return {
         "name": name,
-        "status": {
-            "caido": "caído",
-            "lento": "lento",
-            "ok-con-error": "ok-con-error",
-            "ok": "ok",
-        }[status],
+        "status": display_status,
         "last_ping": agent_state.get("last_ping"),
         "last_error": last_error_line if error_unresolved else None,
     }
 
 
-def check_all() -> dict:
+def check_all(transitions: list[dict] | None = None) -> dict:
     state = load_state()
     registry = load_registry()
-    results = [compute_status(agent["name"], agent, state) for agent in registry]
+    results = [
+        compute_status(agent["name"], agent, state, transitions) for agent in registry
+    ]
     save_state(state)
     return {
         "checked_at": to_iso(now_utc()),
@@ -187,10 +232,11 @@ def write_last_status(report: dict) -> None:
 
 
 def run_check_and_persist() -> dict:
-    report = check_all()
+    transitions: list[dict] = []
+    report = check_all(transitions)
     write_last_status(report)
     append_alerts(report)
-    return report
+    return {**report, "transitions": transitions}
 
 
 def cmd_check(_args: argparse.Namespace) -> None:

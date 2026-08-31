@@ -105,6 +105,36 @@
     word-break: break-word;
   }
   #empty { color: var(--muted); padding: 40px; text-align: center; grid-column: 1 / -1; }
+
+  h2 {
+    font-size: 14px;
+    margin: 0 0 12px;
+    padding: 0 24px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  #history {
+    margin: 8px 24px 24px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  #history-list { list-style: none; margin: 0; padding: 0; max-height: 340px; overflow-y: auto; }
+  #history-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  #history-list li:last-child { border-bottom: none; }
+  #history-list .h-time { color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
+  #history-list .h-name { font-weight: 600; flex: 0 0 auto; }
+  #history-list .h-change { color: var(--muted); }
+  #history-empty { padding: 20px; text-align: center; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -115,6 +145,11 @@
 <main id="cards">
   <div id="empty">Esperando datos…</div>
 </main>
+
+<h2>Histórico</h2>
+<div id="history">
+  <ul id="history-list"></ul>
+</div>
 
 <script>
   const cards = document.getElementById("cards");
@@ -169,6 +204,45 @@
     }
   }
 
+  const historyList = document.getElementById("history-list");
+  const MAX_HISTORY_ROWS = 50;
+
+  function statusLabel(status) {
+    return status === null || status === undefined ? "(nunca visto)" : status;
+  }
+
+  function historyRow(event) {
+    const li = document.createElement("li");
+    const cls = statusClass[event.to] || "ok";
+    li.innerHTML = `
+      <span class="h-time">${fmtRelative(event.at)}</span>
+      <span class="h-name">${event.name}</span>
+      <span class="h-change">${statusLabel(event.from)} →</span>
+      <span class="badge ${cls}">${event.to}</span>
+    `;
+    return li;
+  }
+
+  function renderHistory(events) {
+    historyList.innerHTML = "";
+    if (!events || events.length === 0) {
+      const li = document.createElement("li");
+      li.id = "history-empty";
+      li.textContent = "Sin cambios de estado todavía.";
+      historyList.appendChild(li);
+      return;
+    }
+    for (const event of events) historyList.appendChild(historyRow(event));
+  }
+
+  function prependHistory(event) {
+    document.getElementById("history-empty")?.remove();
+    historyList.insertBefore(historyRow(event), historyList.firstChild);
+    while (historyList.children.length > MAX_HISTORY_ROWS) {
+      historyList.removeChild(historyList.lastChild);
+    }
+  }
+
   function connectEvents() {
     const es = new EventSource("/events");
     es.onopen = () => {
@@ -179,16 +253,24 @@
       connDot.className = "down";
       connText.textContent = "reconectando…";
     };
-    es.onmessage = (ev) => {
+    es.addEventListener("status", (ev) => {
       const report = JSON.parse(ev.data);
       render(report);
       connText.textContent = "actualizado " + fmtRelative(report.checked_at);
-    };
+    });
+    es.addEventListener("transition", (ev) => {
+      prependHistory(JSON.parse(ev.data));
+    });
   }
 
   fetch("/api/status")
     .then((r) => r.json())
     .then(render)
+    .catch(() => {});
+
+  fetch("/api/history")
+    .then((r) => r.json())
+    .then((data) => renderHistory(data.events))
     .catch(() => {});
 
   connectEvents();

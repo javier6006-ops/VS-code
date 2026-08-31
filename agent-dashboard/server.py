@@ -30,11 +30,18 @@ class Broadcaster:
 
     def publish(self, report: dict) -> None:
         self.latest = report
-        data = json.dumps(report, ensure_ascii=False)
+        self._emit("status", report)
+
+    def publish_transitions(self, events: list[dict]) -> None:
+        for event in events:
+            self._emit("transition", event)
+
+    def _emit(self, kind: str, payload: dict) -> None:
+        data = json.dumps(payload, ensure_ascii=False)
         with self._lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
-            q.put(data)
+            q.put((kind, data))
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue()
@@ -60,6 +67,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         elif self.path == "/api/status":
             self._serve_json(broadcaster.latest or {"checked_at": None, "agents": []})
+        elif self.path.startswith("/api/history"):
+            self._serve_json({"events": dashboard.read_history(limit=50)})
         elif self.path == "/events":
             self._serve_sse()
         else:
@@ -92,11 +101,11 @@ class Handler(BaseHTTPRequestHandler):
         q = broadcaster.subscribe()
         try:
             if broadcaster.latest is not None:
-                self._write_event(json.dumps(broadcaster.latest, ensure_ascii=False))
+                self._write_event("status", json.dumps(broadcaster.latest, ensure_ascii=False))
             while True:
                 try:
-                    data = q.get(timeout=15)
-                    self._write_event(data)
+                    kind, data = q.get(timeout=15)
+                    self._write_event(kind, data)
                 except queue.Empty:
                     self.wfile.write(b": keep-alive\n\n")
                     self.wfile.flush()
@@ -105,15 +114,18 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             broadcaster.unsubscribe(q)
 
-    def _write_event(self, data: str) -> None:
-        self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+    def _write_event(self, kind: str, data: str) -> None:
+        self.wfile.write(f"event: {kind}\ndata: {data}\n\n".encode("utf-8"))
         self.wfile.flush()
 
 
 def check_loop(interval: float, stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         report = dashboard.run_check_and_persist()
+        transitions = report.pop("transitions", [])
         broadcaster.publish(report)
+        if transitions:
+            broadcaster.publish_transitions(transitions)
         stop_event.wait(interval)
 
 
