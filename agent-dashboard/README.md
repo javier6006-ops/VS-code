@@ -91,6 +91,20 @@ driven by cron/systemd-timer instead of the built-in hourly sleep:
 python dashboard.py loop --once
 ```
 
+## Live viewer
+
+```bash
+python dashboard.py serve --port 8080 --interval 10
+```
+
+Opens a web page at `http://localhost:8080` showing every registered agent
+as a card (name, status, last ping, last error). It runs its own check loop
+(default every 10s, independent from `loop`'s hourly cadence) and pushes
+each new result to the browser over Server-Sent Events, so a card flips to
+"caído" — with a highlight animation — the moment the dashboard detects it,
+with no manual refresh. Scales to any number of agents in `registry.json`;
+the page lays them out as a responsive grid.
+
 ## Running it for real (systemd)
 
 `systemd/agent-dashboard.service` + `systemd/agent-dashboard.timer` run

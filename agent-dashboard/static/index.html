@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card-bg: #ffffff;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --ok: #16a34a;
+    --ok-bg: #ecfdf3;
+    --lento: #b45309;
+    --lento-bg: #fffbeb;
+    --error: #b45309;
+    --error-bg: #fff7ed;
+    --caido: #dc2626;
+    --caido-bg: #fef2f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --card-bg: #181b21;
+      --text: #e5e7eb;
+      --muted: #9aa1ac;
+      --border: #2a2f38;
+      --ok-bg: #0f2417;
+      --lento-bg: #2a2110;
+      --error-bg: #2a1e10;
+      --caido-bg: #2a1414;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  #meta { color: var(--muted); font-size: 13px; text-align: right; }
+  #conn-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    margin-right: 6px;
+  }
+  #conn-dot.live { background: var(--ok); }
+  #conn-dot.down { background: var(--caido); }
+  main {
+    padding: 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+  }
+  .card.flash {
+    box-shadow: 0 0 0 2px var(--caido);
+  }
+  .card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .name { font-weight: 600; font-size: 15px; }
+  .badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .badge.lento { color: var(--lento); background: var(--lento-bg); }
+  .badge.ok-con-error { color: var(--error); background: var(--error-bg); }
+  .badge.caido { color: var(--caido); background: var(--caido-bg); }
+  .row { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .error-line {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--caido-bg);
+    color: var(--caido);
+    border-radius: 6px;
+    font-size: 12.5px;
+    word-break: break-word;
+  }
+  #empty { color: var(--muted); padding: 40px; text-align: center; grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Dashboard</h1>
+  <div id="meta"><span id="conn-dot"></span><span id="conn-text">conectando…</span></div>
+</header>
+<main id="cards">
+  <div id="empty">Esperando datos…</div>
+</main>
+
+<script>
+  const cards = document.getElementById("cards");
+  const empty = document.getElementById("empty");
+  const connDot = document.getElementById("conn-dot");
+  const connText = document.getElementById("conn-text");
+  const prevStatus = new Map();
+
+  const statusClass = {
+    "ok": "ok",
+    "lento": "lento",
+    "ok-con-error": "ok-con-error",
+    "caído": "caido",
+  };
+
+  function fmtRelative(iso) {
+    if (!iso) return "nunca";
+    const diffMs = Date.now() - new Date(iso).getTime();
+    const s = Math.max(0, Math.floor(diffMs / 1000));
+    if (s < 60) return `hace ${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `hace ${m}m`;
+    const h = Math.floor(m / 60);
+    return `hace ${h}h ${m % 60}m`;
+  }
+
+  function render(report) {
+    if (!report || !report.agents || report.agents.length === 0) {
+      cards.innerHTML = "";
+      cards.appendChild(empty);
+      return;
+    }
+    empty.remove();
+    cards.innerHTML = "";
+    for (const agent of report.agents) {
+      const cls = statusClass[agent.status] || "ok";
+      const justFailed = prevStatus.get(agent.name) !== "caído" && agent.status === "caído";
+      prevStatus.set(agent.name, agent.status);
+
+      const card = document.createElement("div");
+      card.className = "card" + (justFailed ? " flash" : "");
+      card.innerHTML = `
+        <div class="card-top">
+          <span class="name">${agent.name}</span>
+          <span class="badge ${cls}">${agent.status}</span>
+        </div>
+        <div class="row">Último ping: ${fmtRelative(agent.last_ping)}</div>
+        ${agent.last_error ? `<div class="error-line">${agent.last_error}</div>` : ""}
+      `;
+      cards.appendChild(card);
+      if (justFailed) setTimeout(() => card.classList.remove("flash"), 3000);
+    }
+  }
+
+  function connectEvents() {
+    const es = new EventSource("/events");
+    es.onopen = () => {
+      connDot.className = "live";
+      connText.textContent = "en vivo";
+    };
+    es.onerror = () => {
+      connDot.className = "down";
+      connText.textContent = "reconectando…";
+    };
+    es.onmessage = (ev) => {
+      const report = JSON.parse(ev.data);
+      render(report);
+      connText.textContent = "actualizado " + fmtRelative(report.checked_at);
+    };
+  }
+
+  fetch("/api/status")
+    .then((r) => r.json())
+    .then(render)
+    .catch(() => {});
+
+  connectEvents();
+  setInterval(() => {
+    // Keep relative timestamps ("hace 3m") fresh between server pushes.
+    fetch("/api/status").then((r) => r.json()).then(render).catch(() => {});
+  }, 15000);
+</script>
+</body>
+</html>

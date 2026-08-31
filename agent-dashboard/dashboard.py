@@ -9,6 +9,8 @@ Usage:
                                         appending to alerts.log on failures.
     python dashboard.py loop --once    Run a single loop iteration (writes
                                         the files) and exit. Useful for cron.
+    python dashboard.py serve          Serve a live web viewer that updates
+                                        the moment an agent's status changes.
 
 See README.md for the registry.json and per-agent log-file formats.
 """
@@ -203,6 +205,12 @@ def cmd_loop(args: argparse.Namespace) -> None:
         time.sleep(CHECK_INTERVAL_SECONDS)
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    import server  # local import: avoids a circular import at module load time
+
+    server.serve(port=args.port, interval=args.interval)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent Dashboard health checker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -215,6 +223,16 @@ def main() -> None:
         "--once", action="store_true", help="Run a single iteration and exit"
     )
     loop_parser.set_defaults(func=cmd_loop)
+
+    serve_parser = sub.add_parser("serve", help="Serve a live web viewer")
+    serve_parser.add_argument("--port", type=int, default=8080)
+    serve_parser.add_argument(
+        "--interval",
+        type=float,
+        default=10.0,
+        help="Seconds between checks while serving (default: 10)",
+    )
+    serve_parser.set_defaults(func=cmd_serve)
 
     args = parser.parse_args()
     args.func(args)
