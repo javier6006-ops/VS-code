@@ -1,0 +1,6 @@
+{
+  "searchStringsArray": ["<tipo de negocio, ej. \"panaderías\">"],
+  "locationQuery": "<ciudad o región, ej. \"Santiago, Chile\">",
+  "maxCrawledPlaces": 50,
+  "language": "es"
+}
