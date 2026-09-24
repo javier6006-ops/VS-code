@@ -6,3 +6,4 @@ lecturas/
 *.pkl
 *.log
 resumen.json
+__pycache__/
