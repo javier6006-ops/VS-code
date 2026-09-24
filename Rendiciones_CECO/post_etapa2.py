@@ -35,7 +35,7 @@ MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Ago
 results = pickle.load(open("resultados_base.pkl", "rb"))
 index = {x["id"]: x for x in json.load(open("revisar/indice.json", encoding="utf-8"))}
 lecturas = {}
-for fn in sorted(glob.glob("lecturas/lote_*.json")):
+for fn in sorted(glob.glob("lecturas/lote_*.json")):   # (los .jsonl son borradores)
     for x in json.load(open(fn, encoding="utf-8")):
         lecturas[x["id"]] = x
 
@@ -46,9 +46,8 @@ for res in results:
     if rid not in lecturas:
         continue
     lec, pags = lecturas[rid], {p["img"]: p for p in index[rid]["paginas"]}
-    leidas = {(p["archivo"], p["pagina"]) for p in pags.values()}   # páginas leídas a mano (no aportaban monto)
-    res["items"] = [it for it in res["items"]
-                    if it.get("monto") or (it.get("archivo"), it.get("pagina")) not in leidas]
+    leidas = {(p["archivo"], p["pagina"]) for p in pags.values()}   # páginas leídas a mano (sin monto o sólo OCR)
+    res["items"] = [it for it in res["items"] if (it.get("archivo"), it.get("pagina")) not in leidas]
     for it in lec.get("items", []):
         c = it["concepto"].strip().upper()
         assert c in CONCEPTOS_OK, (rid, c)
@@ -64,6 +63,144 @@ for res in results:
         ilegible_ids.add(rid)
     res["estado"] = (res["estado"] + " + LECTURA MANUAL") if lec.get("items") else (res["estado"] + " + ILEGIBLE")
 
+# ---------- 1b. Robustez sobre lo leído automáticamente ----------
+EXTRA = [  # emisor/descripción -> concepto, para ítems automáticos que quedaron en OTROS
+    ("APPS_TRANSPORTE", ["uber", "cabify", "didi", "indrive"]),
+    ("COMBUSTIBLE", ["copec", "enex", "aramco", "esmax", "shell", "petrobras", "bencina", "gasolina", "diesel"]),
+    ("PEAJE_TAG", ["autopista", "peaje", "costanera norte", "vespucio"]),
+    ("ESTACIONAMIENTO", ["estacionamiento", "parking", "saba"]),
+    ("ALOJAMIENTO", ["hotel", "hostal", "hospedaje", "cabanas", "apart", "airbnb", "booking"]),
+    ("PASAJE_AEREO", ["latam", "sky airline", "jetsmart", "aerolinea"]),
+    ("BUS_INTERURBANO", ["turbus", "pullman", "buses", "terminal rodoviario"]),
+    ("TRANSPORTE_PUBLICO", ["metro de santiago", "bip", "efe", "movired"]),
+    ("TAXI_COLECTIVO", ["taxi", "radiotaxi", "transfer"]),
+    ("ALIMENTACION", ["restaurant", "restaurante", "resto", "coffee", "coffe", "cafe", "cafeteria", "sushi", "pizza",
+                      "burger", "gastronom", "comida", "panaderia", "pasteleria", "dulceria", "chocolate", "almuerzo",
+                      "colacion", "cena", "coffee break", "starbucks", "mcdonald", "juan maestro", "doggis"]),
+    ("SUPERMERCADO", ["lider", "jumbo", "tottus", "unimarc", "santa isabel", "acuenta", "supermercado", "oxxo"]),
+    ("FERRETERIA_MANTENCION", ["sodimac", "easy", "construmart", "ferreteria", "aseo", "limpieza", "epp",
+                               "seguridad industrial"]),
+    ("UTILES_OFICINA", ["libreria", "lapiz lopez", "imprenta", "impresion", "toner", "resma"]),
+    ("COURIER", ["chilexpress", "starken", "correos de chile", "bluexpress", "blue express"]),
+    ("NOTARIA", ["notaria", "notario", "conservador"]),
+    ("FARMACIA", ["farmacia", "cruz verde", "salcobrand", "ahumada"]),
+]
+import re as _re  # noqa: E402
+EXTRA_RX = [(c, kw, _re.compile(rf"(?<![a-z0-9]){_re.escape(kw)}(?![a-z0-9])")) for c, kws in EXTRA for kw in kws]
+n_ocr_dudoso = n_reclas = 0
+for res in results:
+    declared = res["rendicion"].get("monto_declarado") or 0
+    if res["rendicion"]["id"] in lecturas:
+        continue
+    decl_n = R.normalize(res["rendicion"].get("concepto_declarado"))
+    for it in res["items"]:
+        raw = f"{it.get('emisor') or ''} {it.get('descripcion') or ''}"
+        if it.get("metodo") in ("ocr_tesseract", "texto_pdf_texto") and it.get("monto"):
+            m_exp = _re.search(r"monto\s*\$\s*([\d\.]{3,})", raw, _re.I)
+            if m_exp:                                   # "Monto $140.000" explícito en el comprobante
+                v = R.parse_amount(m_exp.group(1))
+                if v and v != it["monto"]:
+                    it["observacion"] = f"Monto corregido al 'Monto $' explícito (OCR leía {it['monto']:,.0f})".replace(",", ".")
+                    it["monto"] = v
+            elif _re.search(rf"\b{int(it['monto'])}\b", raw.replace(".", "")) and _re.search(r"\d{7}\s+\w", raw) \
+                    and str(int(it["monto"])).endswith("000") and len(str(int(it["monto"]))) == 7:
+                it["observacion"] = "Monto OCR era un código postal: no se considera"
+                if _re.search(r",\s*CL\b", raw):
+                    it["concepto"], it["palabra_clave"] = "APPS_TRANSPORTE", "reclasif:recibo app (direccion, CL)"
+                it["monto"], n_ocr_dudoso = None, n_ocr_dudoso + 1
+                continue
+        if it.get("metodo") == "planilla_reglas" and it.get("monto") and it.get("concepto") == "OTROS" \
+                and "movilizacion" in decl_n:
+            it["concepto"], it["palabra_clave"] = "COMBUSTIBLE", "reclasif:planilla movilizacion (km vehiculo propio)"
+            n_reclas += 1
+        if it.get("metodo") == "ocr_tesseract" and it.get("monto") and declared and it["monto"] > declared * 1.05:
+            it["observacion"] = f"Monto OCR dudoso ({it['monto']:,.0f} > declarado): no se considera".replace(",", ".")
+            it["monto"], n_ocr_dudoso = None, n_ocr_dudoso + 1
+        if it.get("monto") and it.get("concepto") == "OTROS":
+            t = R.normalize(f"{it.get('emisor') or ''} {it.get('descripcion') or ''}")
+            for c, kw, rx in EXTRA_RX:
+                if rx.search(t):
+                    it["concepto"], it["palabra_clave"], n_reclas = c, f"reclasif:{kw}", n_reclas + 1
+                    break
+
+# ---------- 1c. Re-lectura de planillas donde el parser tomó la columna equivocada (ej. "Valor por Km") ----------
+CACHE = XLSX.parent / f"{XLSX.stem}_rpa_cache"
+MONTO_COLS = ["monto a rendir", "monto a reembolsar", "total a rendir", "monto total", "valor total", "monto", "total",
+              "importe", "valor"]
+NO_MONTO = ["por km", "unitario", "unit", "km recorridos", "kms", "litros", "cantidad", "rut", "fecha", "n°", "nro"]
+DESC_COLS = ["motivo", "detalle", "descripcion", "concepto", "glosa", "item", "proveedor", "destino"]
+
+
+def _relee_planilla(f):
+    """Devuelve [(descripcion, monto, es_km, fecha)] o None si no encuentra una tabla con columna de monto."""
+    out = None
+    for u in R.extract(f):
+        if not u.filas:
+            continue
+        for hi, row in enumerate(u.filas[:30]):
+            hdr = [R.normalize(v) if v is not None else "" for v in row]
+            mcol = next((j for key in MONTO_COLS for j, h in enumerate(hdr)
+                         if key in h and not any(b in h for b in NO_MONTO)), None)
+            if mcol is None:
+                continue
+            dcol = next((j for key in DESC_COLS for j, h in enumerate(hdr) if key in h), None)
+            fcol = next((j for j, h in enumerate(hdr) if "fecha" in h), None)
+            es_km = any("km" in h for h in hdr)
+            rows = []
+            for r in u.filas[hi + 1:]:
+                if mcol >= len(r):
+                    continue
+                txt = " ".join(R.normalize(v) for v in r if isinstance(v, str))
+                if "total" in txt and dcol is not None and not (dcol < len(r) and r[dcol]):
+                    continue                                     # fila TOTAL
+                v = R.parse_amount(r[mcol])
+                if not v or v < 100:
+                    continue
+                desc = str(r[dcol]) if dcol is not None and dcol < len(r) and r[dcol] is not None else ""
+                rows.append((desc, v, es_km, r[fcol] if fcol is not None and fcol < len(r) else None))
+            if rows:
+                out = (out or []) + rows
+            break
+    return out
+
+
+n_planillas = 0
+for res in results:
+    rid, r = res["rendicion"]["id"], res["rendicion"]
+    declared = r.get("monto_declarado") or 0
+    if rid in lecturas or not declared:
+        continue
+    pl = [it for it in res["items"] if it.get("metodo") == "planilla_reglas"]
+    detected = sum(it["monto"] for it in res["items"] if it.get("monto") and it.get("concepto") != R.SIN_ID)
+    if not pl or detected >= 0.6 * declared:
+        continue
+    try:
+        data = R.download(r["adjunto"], CACHE / "descargas").read_bytes()
+        files = {f.ruta: f for f in R.expand(R.filename_from_url(r["adjunto"]), data)}
+    except Exception:  # noqa: BLE001
+        continue
+    nuevos, rutas = [], set()
+    for ruta in {it["archivo"] for it in pl}:
+        f = files.get(ruta)
+        rows = _relee_planilla(f) if f else None
+        if not rows:
+            continue
+        s = sum(v for _, v, _, _ in rows)
+        if not (0.5 * declared <= s <= 1.5 * declared):          # sólo si la re-lectura cuadra razonablemente
+            continue
+        rutas.add(ruta)
+        clf = R.Classifier(R.CONFIG["conceptos"])
+        for desc, v, es_km, fch in rows:
+            c, kw = ("COMBUSTIBLE", "planilla km (vehiculo propio)") if es_km else clf.classify(desc)
+            nuevos.append({**asdict(R.Item(tipo_documento="Planilla", descripcion=desc[:120], monto=v, concepto=c,
+                                           palabra_clave=kw, metodo="planilla_relectura", confianza="media",
+                                           fecha_doc=R.parse_date(fch))),
+                           "archivo": ruta, "tipo_archivo": "xlsx", "pagina": 1, "alertas": ""})
+    if rutas:
+        res["items"] = [it for it in res["items"] if not (it.get("metodo") == "planilla_reglas" and it["archivo"] in rutas)]
+        res["items"] += nuevos
+        n_planillas += 1
+
 R.audit(results)
 R.add_cuadratura(results)
 for res in results:                      # observación de la diferencia en las revisadas a mano
@@ -71,18 +208,57 @@ for res in results:                      # observación de la diferencia en las 
     if rid in lecturas:
         for it in res["items"]:
             if it.get("concepto") == R.SIN_ID and it.get("metodo") == "cuadratura":
-                if rid in ilegible_ids:
+                if lecturas[rid].get("obs_sin"):
+                    it["descripcion"] = "Diferencia no respaldada en comprobantes legibles en CLP"
+                    it["observacion"] = lecturas[rid]["obs_sin"]
+                elif rid in ilegible_ids:
                     it["descripcion"], it["observacion"] = "Comprobante(s) ilegible(s)", "ilegible"
                 else:
                     it["descripcion"] = "Diferencia: lo leído en los comprobantes no alcanza al monto declarado"
                     it["observacion"] = "no respaldado en comprobantes visibles"
 
+# Prorrateo: si lo leído supera lo declarado (p. ej. planilla resumen + detalle, o boletas de otra rendición),
+# los montos se escalan a lo declarado para que los totales por concepto cuadren con lo pagado en Talana.
+n_prorr = 0
+for res in results:
+    declared = res["rendicion"].get("monto_declarado") or 0
+    items = [it for it in res["items"] if it.get("monto") and it.get("concepto") != R.SIN_ID]
+    detected = sum(it["monto"] for it in items)
+    f = declared / detected if declared and detected > declared + 1 else 1.0
+    n_prorr += f < 1
+    ids = {id(it) for it in items}
+    for it in res["items"]:
+        it["monto_bruto"], it["factor"] = it.get("monto"), f
+        if f < 1 and id(it) in ids:
+            it["monto"] = round(it["monto"] * f)
+
 out = Path(f"Desglose_Rendiciones_{dt.datetime.now():%Y%m%d_%H%M}_revisado.xlsx")
 meta = {"Archivo de entrada": XLSX.resolve(), "Hoja": "Reembolsos Consolidado", "Motor": "local + lectura manual de imágenes",
         "Filtros": "solo_finalizadas=True, CECOs operacionales (14)", "Fecha ejecución": dt.datetime.now().strftime("%d-%m-%Y %H:%M"),
         "Rendiciones procesadas": len(results), "Revisadas a mano (falta OCR)": len(lecturas),
-        "Ítems leídos a mano": n_items, "Con comprobantes ilegibles": len(ilegible_ids)}
+        "Ítems leídos a mano": n_items, "Con comprobantes ilegibles": len(ilegible_ids),
+        "Rendiciones prorrateadas (leído > declarado)": n_prorr,
+        "Ítems OCR descartados (monto > declarado)": n_ocr_dudoso, "Ítems OTROS reclasificados": n_reclas,
+        "Planillas re-leídas (columna de monto corregida)": n_planillas,
+        "Nota montos": "Monto ítem = monto prorrateado a lo declarado; 'Monto bruto leído' = lo leído en el comprobante"}
 R.write_report(results, out, meta)
+
+def subtipo_otros(it):
+    if it.get("concepto") != "OTROS":
+        return ""
+    t = R.normalize(f"{it.get('emisor') or ''} {it.get('descripcion') or ''}")
+    for lab, kws in [("Transferencia a persona", ["transferencia", "nombre pagador", "team honor"]),
+                     ("Pago de servicios / cuentas", ["servipag", "comprobante de pago", "cuenta", "aguas", "enel"]),
+                     ("Arriendo", ["arriendo", "rent a car", "econorent"]),
+                     ("Eventos / publicidad", ["evento", "produccion", "publicidad", "pendon", "impresos"]),
+                     ("Premios / gift cards / regalos", ["gift", "premio", "regalo", "tarjeta regalo"]),
+                     ("Vestuario / uniformes", ["vestuario", "corbata", "uniforme", "deportes"]),
+                     ("Capacitación / salud", ["capacitacion", "curso", "universidad", "clinic", "mutual"]),
+                     ("Bazar / compras sin detalle", ["bazar", "sin detalle", "mall chino", "comercial"])]:
+        if any(k in t for k in kws):
+            return lab
+    return "Otros sin clasificar"
+
 
 # ---------- 2. Base plana ----------
 def norm(s):
@@ -98,6 +274,7 @@ for res in results:
         if it.get("monto"):
             rows.append({"CECO": r["ceco"], "Rendidor": r["rendidor"], "Usuario Cabify": r["usa_cabify"],
                          "Mes": f.strftime("%Y-%m") if f else "", "Concepto": it.get("concepto") or "OTROS",
+                         "Subtipo OTROS": subtipo_otros(it),
                          "Monto": float(it["monto"]), "ID": r["id"]})
 df = pd.DataFrame(rows)
 meses = sorted(m for m in df["Mes"].unique() if m)
@@ -107,6 +284,18 @@ for res in results:
 
 wb = openpyxl.load_workbook(out)
 MONEY, HF, HFont = R.MONEY, R.HDR_FILL, R.HDR_FONT
+wd = wb["Desglose x Ítem"]
+for c, h in ((23, "Monto bruto leído"), (24, "Factor prorrateo"), (25, "Subtipo OTROS")):
+    x = wd.cell(row=1, column=c, value=h)
+    x.fill, x.font = HF, HFont
+n = 1
+for res in results:
+    for it in res["items"]:
+        n += 1
+        wd.cell(row=n, column=23, value=it.get("monto_bruto")).number_format = MONEY
+        wd.cell(row=n, column=24, value=it.get("factor")).number_format = "0.000"
+        wd.cell(row=n, column=25, value=subtipo_otros(it))
+wd.auto_filter.ref = f"A1:Y{max(n, 2)}"
 
 
 def header(ws, hs, row=1):
@@ -254,7 +443,9 @@ for (ceco, rend), g in mov.groupby(["CECO", "Rendidor"]):
     names, how = cabify_names(rend)
     if not names:
         continue
-    cg = cab[cab["pn"].isin(names)]
+    cg = cab[cab["pn"].isin(names) & cab["Mes"].isin(meses)]
+    if cg["Precio Fnal"].sum() <= 0:                     # sin viajes Cabify en el período: no es usuario activo
+        continue
     lines = [("Cabify corporativo (viajes)", cg.groupby("Mes")["Precio Fnal"].sum()),
              ("Rendido APPS_TRANSPORTE", g[g["Concepto"] == "APPS_TRANSPORTE"].groupby("Mes")["Monto"].sum()),
              ("Rendido COMBUSTIBLE", g[g["Concepto"] == "COMBUSTIBLE"].groupby("Mes")["Monto"].sum())]
@@ -294,9 +485,9 @@ header(wbd, list(df.columns))
 for i, rr in enumerate(df.itertuples(index=False), 2):
     for c, v in enumerate(rr, 1):
         wbd.cell(row=i, column=c, value=v)
-    wbd.cell(row=i, column=6).number_format = MONEY
-wbd.auto_filter.ref = f"A1:G{len(df) + 1}"
-R._widths(wbd, [28, 32, 9, 9, 24, 14, 11])
+    wbd.cell(row=i, column=7).number_format = MONEY
+wbd.auto_filter.ref = f"A1:H{len(df) + 1}"
+R._widths(wbd, [28, 32, 9, 9, 24, 26, 14, 11])
 
 wb.save(out)
 json.dump({"archivo": str(out), "top_ceco": {k: [v[0], list(v[1].items())] for k, v in top_ceco.items()},

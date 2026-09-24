@@ -32,12 +32,17 @@ gap = {t["rendicion"]["id"]: sum(it["monto"] for it in t["items"] if it.get("con
        for t in tmp}
 obj = [r for r in results if gap[r["rendicion"]["id"]] > 1 and r["rendicion"].get("adjunto")
        and r["estado"] not in ("ERROR DESCARGA",)]
+# brecha relevante: > $5.000 y > 10% de lo declarado -> también se releen las páginas leídas por OCR
+relevante = {r["rendicion"]["id"] for r in obj
+             if gap[r["rendicion"]["id"]] > max(5000, 0.1 * (r["rendicion"]["monto_declarado"] or 0))}
 print("Rendiciones con SIN_IDENTIFICAR a revisar:", len(obj))
 
 
 def export(res):
     r = res["rendicion"]
-    con_monto = {(it.get("archivo"), it.get("pagina")) for it in res["items"] if it.get("monto")}
+    ocr_ok = r["id"] not in relevante                    # si la brecha es relevante, el OCR no se da por bueno
+    con_monto = {(it.get("archivo"), it.get("pagina")) for it in res["items"]
+                 if it.get("monto") and (ocr_ok or it.get("metodo") != "ocr_tesseract")}
     try:
         data = R.download(r["adjunto"], CACHE / "descargas").read_bytes()
         inner = R.expand(R.filename_from_url(r["adjunto"]), data)
