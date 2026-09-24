@@ -46,7 +46,9 @@ for res in results:
     if rid not in lecturas:
         continue
     lec, pags = lecturas[rid], {p["img"]: p for p in index[rid]["paginas"]}
-    res["items"] = [it for it in res["items"] if it.get("metodo") != "sin_ocr"]
+    leidas = {(p["archivo"], p["pagina"]) for p in pags.values()}   # páginas leídas a mano (no aportaban monto)
+    res["items"] = [it for it in res["items"]
+                    if it.get("monto") or (it.get("archivo"), it.get("pagina")) not in leidas]
     for it in lec.get("items", []):
         c = it["concepto"].strip().upper()
         assert c in CONCEPTOS_OK, (rid, c)
@@ -60,8 +62,7 @@ for res in results:
         n_items += 1
     if lec.get("ilegibles"):
         ilegible_ids.add(rid)
-    res["estado"] = "LECTURA MANUAL" if lec.get("items") else "ILEGIBLE"
-    res["errores"] = [e for e in res["errores"] if "Tesseract" not in e]
+    res["estado"] = (res["estado"] + " + LECTURA MANUAL") if lec.get("items") else (res["estado"] + " + ILEGIBLE")
 
 R.audit(results)
 R.add_cuadratura(results)
