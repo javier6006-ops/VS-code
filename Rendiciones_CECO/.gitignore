@@ -1,0 +1,8 @@
+# Datos con información personal (nombres, RUT) y archivos pesados: no se suben al repo
+*.xlsx
+*_rpa_cache/
+revisar/
+lecturas/
+*.pkl
+*.log
+resumen.json
