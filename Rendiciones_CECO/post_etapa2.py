@@ -72,9 +72,9 @@ EXTRA = [  # emisor/descripción -> concepto, para ítems automáticos que queda
     ("PASAJE_AEREO", ["pasaje aereo", "vuelo", "latam", "sky airline", "jetsmart", "flight", "airline"]),
     ("UTILES_OFICINA", ["impresiones", "impresion", "anillado", "fotocopias", "fotocopia", "office supplies",
                         "papel", "tinta", "toner", "libro de asistencia", "carpetas", "archivador"]),
-    ("ALIMENTACION", ["cena", "almuerzo", "desayuno", "once", "bebestibles", "snack", "snacks", "agua",
+    ("ALIMENTACION", ["cena", "almuerzo", "desayuno", "bebestibles", "snack", "snacks", "agua mineral",
                       "office water", "water", "cake", "torta", "pastel", "comida", "food", "lunch", "dinner",
-                      "breakfast", "coffee", "cafe", "te", "galletas", "bebidas", "cumpleanos"]),
+                      "breakfast", "coffee", "cafe", "galletas", "bebidas"]),
     ("PEAJE_TAG", ["peajes", "tag", "pase diario", "toll", "tolls", "road roll", "road toll", "highway"]),
     ("PASAJE_AEREO", ["avion", "boletos de avion", "pasaje avion", "pasajes avion", "vuelo", "vuelos", "flight", "flights", "airfare", "air ticket", "aereo"]),
     ("TAXI_COLECTIVO", ["traslado aeropuerto", "traslado casa aeropuerto", "aeropuerto casa", "ses aeropuerto"]),
@@ -83,7 +83,8 @@ EXTRA = [  # emisor/descripción -> concepto, para ítems automáticos que queda
     ("ESTACIONAMIENTO", ["parking", "estacionamiento", "estacionamientos"]),
     ("APPS_TRANSPORTE", ["ride", "rides", "road to", "uber home", "trip with uber", "trip via uber", "traslado reunion",
                          "traslados"]),
-    ("ALIMENTACION", ["lunch", "dinner", "meal", "meals", "drinks", "restaurant", "bar", "coffee with", "food"]),
+    ("ALIMENTACION", ["lunch", "dinner", "meal", "meals", "drinks", "restaurant", "coffee with", "food"]),
+    ("COMBUSTIBLE", ["rendicion km", "kilometraje", "km recorridos", "rendicion_km"]),
     ("ALIMENTACION", ["uber eats", "opcion para llevar", "entregas", "banquete", "banquetes", "catering",
                       "coffee break", "boleta alimentacion", "alimentacion", "consumo", "colacion"]),
     ("APPS_TRANSPORTE", ["uber", "uberx", "uber black", "cabify", "didi", "indrive"]),
@@ -372,6 +373,8 @@ def subtipo_otros(it):
               "fiesta", "office monthly"]),
             ("Transferencia a persona (sin boleta)", ["transferencia", "nombre pagador", "team honor", "transferir"]),
             ("Premios / regalos / gift cards / bonos", ["gift", "premio", "regalo", "tarjeta regalo", "concurso", "bono"]),
+            ("Transporte de personal contratado", ["servicio de transporte", "transporte de pasajeros",
+                                                   "transportes rojas"]),
             ("Arriendo de vehículo", ["car rental", "rent a car", "econorent", "arriendo vehiculo", "arriendo auto"]),
             ("Equipamiento / tecnología", ["monitor", "moniters", "notebook", "mouse", "teclado", "starlink",
                                            "compresores", "celular nuevo", "audifonos", "impresora"]),
@@ -421,6 +424,78 @@ def motivo_sin(it):
     return "Respaldo incompleto o no leído"
 
 
+# ---------- 1e. Concepto probable + detalle de la rendición (para lo que queda sin detalle) ----------
+import msg_support  # noqa: E402,F401  (agrega soporte .msg a R.expand)
+
+DECL_MAP = {"003": "ALIMENTACION", "905": "UTILES_OFICINA", "506": "ESTACIONAMIENTO", "803": "NOTARIA",
+            "707": "OTROS · Agua potable / dispensadores"}
+_ruido = _re.compile(r"(image\d+\.(png|jpg|gif)|correo\.txt|whatsapp image|img[-_]\d+|picture-attachment|"
+                     r"\.(pdf|jpe?g|png|xlsx?|msg|zip|rar)$|^re_ |^rv_ |^fw_ )", _re.I)
+
+
+def detalle_rendicion(res):
+    """Textos descriptivos: carpetas/archivos del adjunto y asuntos de correos .msg."""
+    partes = []
+    for f in res.get("archivos", []):
+        for seg in f["ruta"].split(" > ")[1:] or [f["ruta"]]:
+            for p in seg.split("/"):
+                p2 = _re.sub(r"\.(pdf|jpe?g|png|xlsx?|msg|docx?)$", "", p, flags=_re.I).strip()
+                if len(p2) > 6 and not _re.fullmatch(r"[\w\-\. ()]*\d{6,}[\w\-\. ()]*", p2) and \
+                        not _re.search(r"whatsapp image|picture-attachment|^img|archivo_escaneado|^receipt_", p2, _re.I):
+                    partes.append(p2)
+    for e in res.get("errores", []):
+        m = _re.search(r"([^/>]+)\.msg", e)
+        if m:
+            partes.append(m.group(1).strip())
+    vistos, out = set(), []
+    for p in partes:
+        k = R.normalize(p)
+        if k not in vistos:
+            vistos.add(k)
+            out.append(p)
+    return out
+
+
+def concepto_probable(res):
+    votos = defaultdict(float)
+    for p in detalle_rendicion(res):
+        t = R.normalize(p)
+        for c, kw, rx in EXTRA_RX:
+            if rx.search(t):
+                votos[c] += 1
+                break
+        else:
+            c, kw = R.Classifier(R.CONFIG["conceptos"]).classify(p)
+            if kw:
+                votos[c] += 1
+    if votos:
+        top = max(votos, key=votos.get)
+        if len(votos) >= 3 and votos[top] < 0.5 * sum(votos.values()):
+            return "Mixto (ver detalle de la rendición)", "por descripción de archivos/correos"
+        return top, "por descripción de archivos/correos"
+    ident = defaultdict(float)
+    for it in res["items"]:
+        if it.get("monto") and it.get("concepto") not in (R.SIN_ID, "OTROS"):
+            ident[it["concepto"]] += it["monto"]
+    tot = sum(ident.values())
+    if tot and max(ident.values()) >= 0.4 * tot:
+        return max(ident, key=ident.get), "por lo identificado en la misma rendición"
+    cod = str(res["rendicion"].get("concepto_declarado") or "")[:3]
+    if cod == "002":
+        return (max(ident, key=ident.get) if tot else "Movilización (sin detalle)"), "por cuenta declarada (movilización)"
+    if cod in DECL_MAP:
+        return DECL_MAP[cod], "por cuenta declarada"
+    return "", ""
+
+
+GENERICOS = {"Comprobante con OCR poco legible (revisar)", "Otros sin clasificar", "Planilla: fila sin categoría de gasto",
+             "Voucher / boleta sin detalle del producto"}
+PROB = {}
+for res in results:
+    c, base = concepto_probable(res)
+    PROB[res["rendicion"]["id"]] = (c, base, " | ".join(detalle_rendicion(res))[:250])
+
+
 # ---------- 2. Base plana ----------
 def norm(s):
     s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower()
@@ -439,10 +514,17 @@ for res in results:
                          "Concepto detallado": (f"OTROS · {subtipo_otros(it)}" if it.get("concepto") == "OTROS" else
                                                 f"SIN_IDENTIFICAR · {motivo_sin(it)}" if it.get("concepto") == R.SIN_ID
                                                 else it.get("concepto")),
+                         "Concepto probable (sin detalle)": (PROB[r["id"]][0] if it.get("concepto") == R.SIN_ID or
+                                                             subtipo_otros(it) in GENERICOS else ""),
+                         "Base del probable": (PROB[r["id"]][1] if it.get("concepto") == R.SIN_ID or
+                                               subtipo_otros(it) in GENERICOS else ""),
+                         "Detalle de la rendición (carpetas/correos)": PROB[r["id"]][2],
                          "Emisor / detalle": (str(it.get("emisor") or it.get("descripcion") or "")[:80]
                                               if it.get("concepto") == "OTROS" else ""),
                          "Monto": float(it["monto"]), "ID": r["id"]})
 df = pd.DataFrame(rows)
+_p = df["Concepto probable (sin detalle)"].fillna("")
+df.loc[_p != "", "Concepto detallado"] = df.loc[_p != "", "Concepto detallado"] + " → probable " + _p[_p != ""]
 meses = sorted(m for m in df["Mes"].unique() if m)
 nrend = {(r["rendicion"]["ceco"], r["rendicion"]["rendidor"]): 0 for r in results}
 for res in results:
@@ -652,9 +734,9 @@ header(wbd, list(df.columns))
 for i, rr in enumerate(df.itertuples(index=False), 2):
     for c, v in enumerate(rr, 1):
         wbd.cell(row=i, column=c, value=v)
-    wbd.cell(row=i, column=8).number_format = MONEY
-wbd.auto_filter.ref = f"A1:I{len(df) + 1}"
-R._widths(wbd, [28, 32, 9, 9, 24, 40, 40, 14, 11])
+    wbd.cell(row=i, column=list(df.columns).index("Monto") + 1).number_format = MONEY
+wbd.auto_filter.ref = f"A1:{L(len(df.columns))}{len(df) + 1}"
+R._widths(wbd, [28, 32, 9, 9, 22, 34, 44, 26, 30, 60, 40, 14, 11])
 
 # ---------- 7. Desglose OTROS ----------
 ot = df[df["Concepto"] == "OTROS"]
@@ -710,6 +792,31 @@ for st in sub.index:
         wo.cell(row=row, column=3).number_format = MONEY
         row += 1
 R._widths(wo, [60, 45] + [14] * 20)
+
+# ---------- 8. Pendientes de detalle (para gestión/control) ----------
+pend = df[((df["Concepto"] == R.SIN_ID) | df["Subtipo OTROS"].isin(GENERICOS))]
+pend = pend.groupby(["ID", "CECO", "Rendidor"]).agg(Monto=("Monto", "sum"),
+                                                     Probable=("Concepto probable (sin detalle)", "first"),
+                                                     Base=("Base del probable", "first"),
+                                                     Detalle=("Detalle de la rendición (carpetas/correos)", "first"),
+                                                     Motivo=("Concepto detallado", "first")).reset_index()
+pend = pend[pend["Monto"] > 0].sort_values("Monto", ascending=False)
+link = {res["rendicion"]["id"]: res["rendicion"].get("adjunto") for res in results}
+wpd = wb.create_sheet("Pendientes de detalle", 5)
+hs = ["ID", "CECO", "Rendidor", "Monto sin detalle", "Concepto probable", "Base del probable", "Motivo / tipo",
+      "Detalle de la rendición (carpetas/correos)", "Adjunto"]
+header(wpd, hs)
+for i, rr in enumerate(pend.itertuples(index=False), 2):
+    vals = [rr.ID, rr.CECO, rr.Rendidor, rr.Monto, rr.Probable or "", rr.Base or "", rr.Motivo, rr.Detalle, "Abrir"]
+    for c, v in enumerate(vals, 1):
+        wpd.cell(row=i, column=c, value=v)
+    wpd.cell(row=i, column=4).number_format = MONEY
+    if link.get(rr.ID):
+        wpd.cell(row=i, column=9).hyperlink = link[rr.ID]
+        wpd.cell(row=i, column=9).font = Font(color="0563C1", underline="single")
+wpd.auto_filter.ref = f"A1:I{len(pend) + 1}"
+wpd.freeze_panes = "D2"
+R._widths(wpd, [11, 26, 30, 14, 26, 30, 50, 80, 8])
 
 wb.save(out)
 json.dump({"archivo": str(out), "top_ceco": {k: [v[0], list(v[1].items())] for k, v in top_ceco.items()},
