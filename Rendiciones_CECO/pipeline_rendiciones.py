@@ -545,7 +545,10 @@ def prorratear(results):
         for it in res["items"]:
             it["monto_bruto"], it["factor"] = it.get("monto"), f
             if f < 1 and id(it) in ids:
-                it["monto"] = round(it["monto"] * f)
+                it["monto"] = round(it["monto"] * f, 2)
+        if f < 1:  # el residuo de redondeo va al ítem mayor: la suma queda exactamente igual a lo declarado
+            dif = round(declared - sum(it["monto"] for it in items), 2)
+            max(items, key=lambda x: x["monto"])["monto"] = round(max(items, key=lambda x: x["monto"])["monto"] + dif, 2)
     return n_prorr
 
 
