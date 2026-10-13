@@ -220,12 +220,13 @@ def _periodo_cols(f: dt.date | None) -> dict:
             "Periodo": f"{f.year}-{f.month:02d}"}
 
 
-def cruce_cabify(xlsx: Path, rendidores: list[str]):
+def cruce_cabify(xlsx: Path, rendidores: list[str], hoja_cabify: str = "Cabify Extracto",
+                 hoja_auditoria: str = "Auditoria Cabify vs Rend"):
     """Cruce Talana→Cabify por nombre. Devuelve (cabify_df, {rendidor:(pasajeros, fuente)}, {pasajero_norm: rendidor})."""
-    cab = pd.read_excel(xlsx, sheet_name="Cabify Extracto")
+    cab = pd.read_excel(xlsx, sheet_name=hoja_cabify)
     cab = cab[cab["Estado final"] != "No encontrado"].copy()
     cab["pn"] = cab["Pasajero"].map(P.norm)
-    aud = pd.read_excel(xlsx, sheet_name="Auditoria Cabify vs Rend", header=1)
+    aud = pd.read_excel(xlsx, sheet_name=hoja_auditoria, header=1)
     manual = {}
     for _, a in aud[aud["¿Coincide en Cabify?"] == "SI"].iterrows():
         manual[P.norm(a["Nombre (origen: Talana)"])] = {P.norm(n) for n in str(a["Nombre (origen: Cabify)"]).split(";")}
@@ -530,7 +531,7 @@ def escribir_xlsx(df: pd.DataFrame, path: Path, concil: list):
     wb.close()
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Genera la base única (una fila por comprobante) para Power BI.")
     ap.add_argument("--excel", default="Presupuestos_Rendiciones_actualizado.xlsx")
     ap.add_argument("--salida", default="salida_powerbi")
@@ -539,11 +540,14 @@ def main():
     ap.add_argument("--pkl", default="resultados_base.pkl")
     ap.add_argument("--nombre", default="Base_Rendiciones_PowerBI")
     ap.add_argument("--reprocesar", action="store_true", help="vuelve a leer los adjuntos (usa la caché)")
+    ap.add_argument("--hoja-rendiciones", default="Reembolsos Consolidado", help="hoja con las solicitudes de Talana")
+    ap.add_argument("--hoja-cabify", default="Cabify Extracto", help="hoja con el extracto de viajes Cabify")
+    ap.add_argument("--hoja-auditoria", default="Auditoria Cabify vs Rend", help="hoja con el cruce manual Talana↔Cabify")
     ap.add_argument("--sin-cabify", action="store_true", help="no incluye los viajes Cabify")
     ap.add_argument("--sin-parquet", action="store_true")
     ap.add_argument("--estado-pkl", default=None,
                     help="guarda/reutiliza el estado ya procesado (acelera ejecuciones repetidas al ajustar el formato)")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 
     xlsx, salida = Path(a.excel), Path(a.salida)
@@ -557,7 +561,7 @@ def main():
         log.info("Reutilizando estado procesado: %s (borra el archivo para recalcular)", a.estado_pkl)
         estado = pickle.load(open(a.estado_pkl, "rb"))
     else:
-        results = P.cargar_resultados(xlsx, Path(a.pkl), a.reprocesar)
+        results = P.cargar_resultados(xlsx, Path(a.pkl), a.reprocesar, a.hoja_rendiciones)
         lecturas, index = P.cargar_lecturas(Path(a.lecturas), Path(a.indice))
         log.info("Aplicando pipeline (%d rendiciones, %d con lectura manual)...", len(results), len(lecturas))
         estado = P.ejecutar_pipeline(results, lecturas, index, cache)
@@ -566,10 +570,10 @@ def main():
     results = estado.results
 
     log.info("Leyendo datos de Talana...")
-    talana = leer_talana(xlsx)
+    talana = leer_talana(xlsx, a.hoja_rendiciones)
     rendidores = [r["rendicion"]["rendidor"] for r in results]
     cecos_full = {c.split(" - ")[0]: c for c in R.CONFIG["cecos_operacionales"]}
-    cab, cab_match, pas2rend = (None, {}, {}) if a.sin_cabify else cruce_cabify(xlsx, rendidores)
+    cab, cab_match, pas2rend = (None, {}, {}) if a.sin_cabify else cruce_cabify(xlsx, rendidores, a.hoja_cabify, a.hoja_auditoria)
 
     log.info("Construyendo filas...")
     rows = filas_rendiciones(estado, talana, cab_match)

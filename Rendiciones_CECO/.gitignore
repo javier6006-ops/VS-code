@@ -14,3 +14,4 @@ salida_powerbi/
 *.csv
 *.parquet
 estado_pipeline.pkl
+.ultima_seleccion.json
