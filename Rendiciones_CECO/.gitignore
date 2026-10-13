@@ -8,3 +8,9 @@ lecturas/
 resumen.json
 __pycache__/
 RESUMEN.md
+
+# Salidas de Power BI (datos personales)
+salida_powerbi/
+*.csv
+*.parquet
+estado_pipeline.pkl
