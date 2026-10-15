@@ -15,3 +15,5 @@ salida_powerbi/
 *.parquet
 estado_pipeline.pkl
 .ultima_seleccion.json
+datos_req/
+salida_req/
