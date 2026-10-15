@@ -107,3 +107,37 @@ def leer_libro(libro: Path, hojas: list[str]):
                                     concepto_declarado=d["cuenta"], fecha=f, monto_declarado=_monto(d["monto"]),
                                     adjunto=us[0] if us else None, usa_cabify="NO", estado=d["estado"]))
     return rend, extra, urls
+
+
+def _hoja_corta(h: str) -> str:
+    """'6. (N) INT - Reembolso AGR PI' y '8. (N) INT - Reembolso AGR PI' son el mismo formulario en libros distintos."""
+    return re.sub(r"^\s*\d+\.\s*", "", h).strip()
+
+
+def leer_libros(libros: list[Path], hojas: list[str] | None = None):
+    """Unifica varios libros y elimina duplicados por ID. Gana el registro del libro MÁS RECIENTE (estado más actualizado).
+    Devuelve (rendiciones, extra, urls, informe) donde informe resume duplicados descartados."""
+    cargados = []
+    for lib in libros:
+        lib = Path(lib)
+        rend, extra, urls = leer_libro(lib, hojas or hojas_reembolso(lib))
+        res = pd.read_excel(lib, sheet_name="Resumen", usecols=["Fecha"], dtype=str)["Fecha"].dropna()
+        cargados.append((lib.stem, str(res.max()), rend, extra, urls))
+    cargados.sort(key=lambda x: x[1], reverse=True)          # más reciente primero
+    vistos: dict[str, dict] = {}
+    rend_f, extra_f, urls_f, informe = [], {}, {}, []
+    for nombre, fmax, rend, extra, urls in cargados:
+        n_dup = 0
+        for r in rend:
+            d = extra[r.id]
+            d["hoja"] = _hoja_corta(d["hoja"])
+            if r.id in vistos:
+                n_dup += 1
+                vistos[r.id]["otros"].append(f"{nombre}: {d['estado']}")
+                continue
+            d["libro"] = nombre
+            vistos[r.id] = d
+            d["otros"] = []
+            rend_f.append(r); extra_f[r.id] = d; urls_f[r.id] = urls[r.id]
+        informe.append((nombre, fmax[:10], len(rend), n_dup))
+    return rend_f, extra_f, urls_f, informe

@@ -8,7 +8,7 @@ import os
 import pickle
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,11 +20,23 @@ import rpa_rendiciones as R  # noqa: E402
 log = logging.getLogger("lectura_req")
 
 
+_AN = None
+
+
+def _init():
+    global _AN
+    os.environ["OMP_THREAD_LIMIT"] = "1"
+    _AN = R.LocalAnalyzer(R.Classifier(R.CONFIG["conceptos"]))
+
+
+def _trabajo(rr, cache):
+    return R.process_one(rr, _AN, cache, False)
+
+
 def leer_adjuntos(rend: list, urls: dict, cache: Path, pkl: Path | None = None, workers: int | None = None) -> list[dict]:
     if pkl and Path(pkl).exists():
         log.info("Resultados desde %s", pkl)
         return pickle.load(open(pkl, "rb"))
-    analyzer = R.LocalAnalyzer(R.Classifier(R.CONFIG["conceptos"]))
     trabajos = []                                  # (indice rendicion, Rendicion con un solo link)
     for i, r in enumerate(rend):
         for u in (urls.get(r.id) or [None]):
@@ -32,8 +44,8 @@ def leer_adjuntos(rend: list, urls: dict, cache: Path, pkl: Path | None = None, 
     out: dict[int, list] = {}
     t0, n = time.time(), len(trabajos)
     log.info("Procesando %d adjuntos de %d rendiciones (caché: %s)", n, len(rend), cache)
-    with ThreadPoolExecutor(workers or R.CONFIG["descarga"]["workers"]) as ex:
-        fut = {ex.submit(R.process_one, rr, analyzer, cache, False): i for i, rr in trabajos}
+    with ProcessPoolExecutor(workers or int(os.environ.get("RPA_PROCS", 6)), initializer=_init) as ex:
+        fut = {ex.submit(_trabajo, rr, cache): i for i, rr in trabajos}
         for k, f in enumerate(as_completed(fut), 1):
             try:
                 out.setdefault(fut[f], []).append(f.result())
@@ -58,9 +70,7 @@ def leer_adjuntos(rend: list, urls: dict, cache: Path, pkl: Path | None = None, 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
-    libro = Path(sys.argv[1])
-    cache = Path(sys.argv[2])
-    pkl = Path(sys.argv[3])
-    rend, extra, urls = I.leer_libro(libro, I.hojas_reembolso(libro))
+    cache, pkl = Path(sys.argv[1]), Path(sys.argv[2])
+    rend, extra, urls, _ = I.leer_libros([Path(x) for x in sys.argv[3:]])
     leer_adjuntos(rend, urls, cache, pkl)
     log.info("LISTO")

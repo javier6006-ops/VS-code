@@ -39,7 +39,11 @@ QUITAR = {"Usuario_Cabify", "Cabify_Pasajero_Match", "Cabify_Match_Fuente", "Tic
           "Solicitante_Cabify", "Vertical_Cabify", "Estado_Viaje_Cabify", "Monto_Cabify_CLP", "Periodo_Origen", "Accion_Solicitada",
           "Tipo_Fondo", "N_Requerimiento_Asociado", "Tipo_Documento_Declarado"}
 NUEVAS_SOLICITUD = [
-    ("Hoja_Origen", "Solicitud", "texto", "Hoja del libro de la que viene la solicitud (cada hoja es un formulario/canal distinto)."),
+    ("Libro_Origen", "Solicitud", "texto", "Libro del que se tomó el registro. Si el ID estaba en varios libros se usa el más reciente."),
+    ("N_Libros_Donde_Aparece", "Solicitud", "entero", "En cuántos libros aparecía el ID (duplicados eliminados = valor − 1)."),
+    ("Estado_En_Otros_Libros", "Solicitud", "texto", "Estado que tenía el ID en los libros más antiguos (ayuda a ver la evolución)."),
+    ("Comparte_Adjunto_Con", "Calidad y auditoría", "texto", "Otros IDs con exactamente el mismo archivo adjunto (posible rendición duplicada)."),
+    ("Hoja_Origen", "Solicitud", "texto", "Formulario/hoja de la que viene la solicitud (sin el número de hoja, que cambia entre libros)."),
     ("Canal", "Solicitud", "texto", "Canal/formulario de la solicitud según la hoja Resumen."),
     ("Etapa_En_Curso", "Solicitud", "texto", "Etapa del flujo en que está la solicitud (Inicial, Derivado a Etapa 2, Finalizado…)."),
     ("Estado_Solicitud", "Solicitud", "texto", "Estado final de la solicitud: Pagada / Aprobado para pago / Rechazada / vacío si sigue en curso."),
@@ -135,6 +139,11 @@ def sugerencia(refact: str, carpeta: str, proyecto: str) -> tuple[str, str]:
 
 
 def enriquecer(rows: list[dict], extra: dict, urls: dict, res_by_id: dict):
+    por_hash: dict[str, set] = {}
+    for i, x in res_by_id.items():
+        if x.get("hash_adjunto"):
+            por_hash.setdefault(x["hash_adjunto"], set()).add(i)
+    comparte = {i: ", ".join(sorted(g - {i})) for g in por_hash.values() if len(g) > 1 for i in g}
     for r in rows:
         d, u = extra.get(r["ID_Rendicion"], {}), urls.get(r["ID_Rendicion"], [])
         res = res_by_id.get(r["ID_Rendicion"], {})
@@ -148,6 +157,8 @@ def enriquecer(rows: list[dict], extra: dict, urls: dict, res_by_id: dict):
         fact_sug, fuente = sugerencia(refact, r.get("Facturable_Segun_Carpeta", ""), d.get("proyecto", "") or d.get("proyecto_sel", ""))
         interno = r.get("Archivo_Interno") or ""
         r.update({
+            "Libro_Origen": d.get("libro", ""), "N_Libros_Donde_Aparece": 1 + len(d.get("otros", [])),
+            "Estado_En_Otros_Libros": "; ".join(d.get("otros", [])), "Comparte_Adjunto_Con": comparte.get(r["ID_Rendicion"], ""),
             "Hoja_Origen": d.get("hoja", ""), "Canal": d.get("canal", ""), "Etapa_En_Curso": d.get("etapa", ""),
             "Estado_Solicitud": d.get("estado_sol", ""), "Etapas_Canal": d.get("etapas", ""),
             "Dias_Sin_Movimiento": _int(d.get("dias_sin_mov")), "Tiempo_Resolucion_Dias": _int(d.get("dias_res")),
@@ -188,7 +199,7 @@ def conciliacion(df: pd.DataFrame, estado: P.Estado, extra: dict) -> list:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--libro", required=True, help="Excel 'Centro de Requerimientos'")
+    ap.add_argument("--libros", nargs="+", required=True, help="uno o más Excel 'Centro de Requerimientos' (se eliminan duplicados por ID)")
     ap.add_argument("--hojas", nargs="*", help="hojas a analizar (por defecto: todas las que contienen 'reembolso')")
     ap.add_argument("--salida", default="salida_req")
     ap.add_argument("--nombre", default="Base_Rendiciones_Requerimientos")
@@ -201,12 +212,12 @@ def main(argv=None):
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 
-    libro, salida = Path(a.libro), Path(a.salida)
+    libros, salida = [Path(x) for x in a.libros], Path(a.salida)
     salida.mkdir(parents=True, exist_ok=True)
-    cache = Path(a.cache) if a.cache else libro.parent / f"{libro.stem}_rpa_cache"
-    hojas = a.hojas or I.hojas_reembolso(libro)
-    log.info("Hojas analizadas: %s", hojas)
-    rend, extra, urls = I.leer_libro(libro, hojas)
+    cache = Path(a.cache) if a.cache else libros[0].parent / "cache_adjuntos"
+    rend, extra, urls, informe = I.leer_libros(libros, a.hojas)
+    for nombre, fmax, n, dup in informe:
+        log.info("Libro %-40s (hasta %s): %5d solicitudes de reembolso, %5d duplicadas descartadas", nombre, fmax, n, dup)
     maestro = salida / f"{a.nombre}.xlsx"
 
     if a.estado_pkl and Path(a.estado_pkl).exists():
@@ -233,7 +244,8 @@ def main(argv=None):
         (salida / "historial").mkdir(exist_ok=True)
         shutil.copy2(maestro, salida / "historial" / f"{a.nombre}_{dt.datetime.now():%Y%m%d_%H%M}.xlsx")
     df = G.tipar(df)
-    concil = conciliacion(df, estado, {"Registros con seguimiento de facturación conservado": conservados,
+    concil = conciliacion(df, estado, {**{f"Libro «{n}»: solicitudes leídas / duplicados descartados": f"{k} / {d}" for n, _, k, d in informe},
+                                       "Registros con seguimiento de facturación conservado": conservados,
                                        "Seguimiento sin equivalente (ver facturacion_huerfanos.csv)": huerfanos})
     G.escribir_xlsx(df, maestro, concil)
     df.to_csv(salida / f"{a.nombre}.csv", index=False, encoding="utf-8-sig", date_format="%Y-%m-%d")
