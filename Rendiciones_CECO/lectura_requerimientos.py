@@ -33,8 +33,19 @@ def _trabajo(rr, cache):
     return R.process_one(rr, _AN, cache, False)
 
 
-def leer_adjuntos(rend: list, urls: dict, cache: Path, pkl: Path | None = None, workers: int | None = None) -> list[dict]:
-    if pkl and Path(pkl).exists():
+def huella_entrada(rend: list, urls: dict) -> str:
+    import hashlib
+    h = hashlib.sha1()
+    for r in sorted(rend, key=lambda x: x.id):
+        h.update(f"{r.id}|{'|'.join(urls.get(r.id, []))}".encode())
+    return h.hexdigest()[:16]
+
+
+def leer_adjuntos(rend: list, urls: dict, cache: Path, pkl: Path | None = None, workers: int | None = None,
+                  fp: str = "") -> list[dict]:
+    """`fp` identifica la entrada (ids + links); si el .pkl guardado es de otra entrada se vuelve a leer (usa la caché)."""
+    sello = Path(f"{pkl}.fp") if pkl else None
+    if pkl and Path(pkl).exists() and (not fp or (sello.exists() and sello.read_text().strip() == fp)):
         log.info("Resultados desde %s", pkl)
         return pickle.load(open(pkl, "rb"))
     trabajos = []                                  # (indice rendicion, Rendicion con un solo link)
@@ -65,6 +76,8 @@ def leer_adjuntos(rend: list, urls: dict, cache: Path, pkl: Path | None = None, 
         resultados.append(base)
     if pkl:
         pickle.dump(resultados, open(pkl, "wb"))
+        if fp:
+            sello.write_text(fp)
     return resultados
 
 
@@ -72,5 +85,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
     cache, pkl = Path(sys.argv[1]), Path(sys.argv[2])
     rend, extra, urls, _ = I.leer_libros([Path(x) for x in sys.argv[3:]])
-    leer_adjuntos(rend, urls, cache, pkl)
+    leer_adjuntos(rend, urls, cache, pkl, fp=huella_entrada(rend, urls))
     log.info("LISTO")

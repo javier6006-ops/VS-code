@@ -70,6 +70,7 @@ import tempfile  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 import unicodedata  # noqa: E402
+import urllib.parse  # noqa: E402
 import zipfile  # noqa: E402
 from collections import defaultdict  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: E402
@@ -124,7 +125,9 @@ CONFIG = {
               "tesseract_rutas": [r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                                   r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
                                   os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe")]},
-    "descarga": {"timeout_seg": 60, "reintentos": 3, "workers": 4},
+    "descarga": {"timeout_seg": 60, "reintentos": 3, "workers": 4,
+                 # sólo se descargan links https de estos hosts (el Excel es una entrada no confiable)
+                 "hosts_permitidos": ["storage.googleapis.com"]},
     "descompresion": {"profundidad_max": 3, "max_archivos_por_adjunto": 200,
                       "rutas_7zip": [r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"]},
     "documentos": {"max_paginas_pdf": 40, "min_chars_pdf_con_texto": 40},
@@ -461,6 +464,9 @@ def download(url: str, cache_dir: Path) -> Path:
         shutil.copy(url, dest)
         return dest
     cfg = CONFIG["descarga"]
+    pu = urllib.parse.urlparse(url)
+    if pu.scheme != "https" or (pu.hostname or "").lower() not in cfg["hosts_permitidos"]:
+        raise ConnectionError(f"Link no permitido (sólo https a {cfg['hosts_permitidos']}): {url[:80]}")
     last = None
     for attempt in range(1, cfg["reintentos"] + 1):
         try:

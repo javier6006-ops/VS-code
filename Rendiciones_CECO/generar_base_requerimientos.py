@@ -121,6 +121,33 @@ def clase(tipo_archivo: str, metodo: str, estado_lectura: str) -> str:
     return t or ("Sin adjunto" if estado_lectura == "SIN ADJUNTO" else "Otro")
 
 
+def huella(libros: list[Path], *extra: Path) -> str:
+    """Identifica la entrada (libros + reglas + lecturas manuales) para no reutilizar una caché obsoleta."""
+    import hashlib
+    h = hashlib.sha1()
+    for f in sorted(libros):
+        st = Path(f).stat()
+        h.update(f"{Path(f).name}|{st.st_size}|{int(st.st_mtime)}".encode())
+    for f in (Path(P.__file__), Path(R.__file__), Path(__file__), Path(I.__file__)):
+        h.update(f.read_bytes())
+    for d in extra:
+        if Path(d).is_dir():
+            for f in sorted(Path(d).glob("*.json")):
+                h.update(f.read_bytes())
+    return h.hexdigest()[:16]
+
+
+def cargar_estado(pkl: Path, fp: str):
+    """Estado procesado si existe y corresponde a la misma entrada; si no, None."""
+    sello = Path(f"{pkl}.fp")
+    if not pkl.exists():
+        return None
+    if not sello.exists() or sello.read_text().strip() != fp:
+        log.warning("%s es de otra entrada o versión del código: se recalcula", pkl.name)
+        return None
+    return pickle.load(open(pkl, "rb"))
+
+
 def _int(v):
     try:
         return int(float(v))
@@ -226,10 +253,10 @@ def main(argv=None):
         log.info("Libro %-40s (hasta %s): %5d solicitudes de reembolso, %5d duplicadas descartadas", nombre, fmax, n, dup)
     maestro = salida / f"{a.nombre}.xlsx"
 
-    if a.estado_pkl and Path(a.estado_pkl).exists():
-        estado = pickle.load(open(a.estado_pkl, "rb"))
-    else:
-        results = L.leer_adjuntos(rend, urls, cache, Path(a.pkl) if a.pkl else None)
+    fp = huella(libros, Path(a.lecturas))
+    estado = cargar_estado(Path(a.estado_pkl), fp) if a.estado_pkl else None
+    if estado is None:
+        results = L.leer_adjuntos(rend, urls, cache, Path(a.pkl) if a.pkl else None, fp=L.huella_entrada(rend, urls))
         for res, r in zip(results, rend):                      # datos de la solicitud siempre desde el libro
             res["rendicion"] = {**r.__dict__}
         lecturas, index = P.cargar_lecturas(Path(a.lecturas), Path(a.indice))
@@ -239,6 +266,7 @@ def main(argv=None):
         estado = P.ejecutar_pipeline(results, lecturas, index, cache)
         if a.estado_pkl:
             pickle.dump(estado, open(a.estado_pkl, "wb"))
+            Path(f"{a.estado_pkl}.fp").write_text(fp)
 
     talana = {i: {"rut": d["rut"], "accion": d["accion"], "fondo": d["fondo"], "req": d["req"], "tipo_doc": d["tipo_doc"],
                   "periodo": "", "fres": d["fecha_res"], "resp": d["resp"]} for i, d in extra.items()}
