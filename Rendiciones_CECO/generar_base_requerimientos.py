@@ -139,6 +139,12 @@ def sugerencia(refact: str, carpeta: str, proyecto: str) -> tuple[str, str]:
 
 
 def enriquecer(rows: list[dict], extra: dict, urls: dict, res_by_id: dict):
+    # solicitudes con monto declarado 0: una lectura OCR no puede crear gasto → se deja 0 y se alerta
+    decl = {r["ID_Rendicion"]: r["Declarado_Rendicion_CLP"] for r in rows if r.get("Fila_Principal") == 1}
+    for r in rows:
+        if (decl.get(r["ID_Rendicion"]) or 0) == 0 and (r.get("Monto_CLP") or 0) > 0:
+            r["Monto_CLP"] = 0.0
+            r["Alertas_Rendicion"] = ((r.get("Alertas_Rendicion") or "") + " Monto declarado = 0: lectura no cuadrada al gasto.").strip()
     por_hash: dict[str, set] = {}
     for i, x in res_by_id.items():
         if x.get("hash_adjunto"):
