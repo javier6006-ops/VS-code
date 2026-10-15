@@ -17,3 +17,4 @@ estado_pipeline.pkl
 .ultima_seleccion.json
 datos_req/
 salida_req/
+envio_req/
